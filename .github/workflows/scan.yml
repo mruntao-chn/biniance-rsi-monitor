@@ -1,0 +1,82 @@
+# .github/workflows/scan.yml
+# Binance RSI 监控自动化任务
+# 触发条件：每5分钟运行一次 + 手动触发
+
+name: 🔍 扫描 Binance RSI (15分钟级别)
+
+# 触发条件
+on:
+  # 每5分钟运行一次（UTC时间）
+  schedule:
+    - cron: '*/5 * * * *'   # 每5分钟
+  # 允许手动触发（仓库 -> Actions 标签页 -> 点击工作流 -> Run workflow）
+  workflow_dispatch:
+  # 推送代码时也可触发（可选）
+  push:
+    branches: [ main ]
+    paths:
+      - 'scan_rsi.py'
+      - '.github/workflows/scan.yml'
+
+# 任务配置
+jobs:
+  scan:
+    # 运行环境
+    runs-on: ubuntu-latest
+    
+    # 任务步骤
+    steps:
+      # 1. 检出代码（从 GitHub 仓库下载到运行环境）
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      # 2. 设置 Python 环境
+      - name: 🐍 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      # 3. 安装系统依赖（TA-Lib 需要 build-essential）
+      - name: 🔧 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      # 4. 安装 Python 依赖
+      - name: 📦 安装 Python 依赖
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy requests
+
+      # 5. 安装 TA-Lib（技术指标库）
+      - name: 📊 安装 TA-Lib
+        run: |
+          # 下载预编译的 wheel 包（避免从源码编译）
+          wget -O ta-lib.tar.gz https://github.com/mrjbq7/ta-lib/releases/download/0.4.24/ta-lib-0.4.24-cp310-cp310-linux_x86_64.whl
+          pip install ta-lib.tar.gz
+          # 验证安装
+          python -c "from talib import RSI; print('✅ TA-Lib 安装成功')"
+
+      # 6. 运行主脚本
+      - name: 🚀 运行 RSI 扫描脚本
+        run: |
+          python scan_rsi.py
+
+      # 7. 提交更新的文件
+      - name: 📤 提交更新到 GitHub
+        run: |
+          git config user.name "RSI Bot"
+          git config user.email "rsi@monitor.com"
+          
+          # 添加所有变更的文件
+          git add data/rsi-history.csv rsi-alerts.csv
+          
+          # 如果有变更，就提交并推送
+          if git diff --cached --quiet; then
+            echo "🟢 无数据变更，无需提交"
+          else
+            git commit -m "📊 自动更新 RSI 数据 $(date '+%Y-%m-%d %H:%M')"
+            git push origin main
+            echo "✅ 数据已提交并推送"
+          fi
