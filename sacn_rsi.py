@@ -1,7 +1,6 @@
 # scan_rsi.py
-# Binance USDT 合约 RSI 监控脚本
+# 升级版：输出两个独立列表 - 超买 和 超卖
 # 作者：Qwen
-# 功能：扫描所有 USDT 永续合约，记录 RSI 异常值，自动更新 CSV
 
 import requests
 import numpy as np
@@ -11,29 +10,24 @@ from datetime import datetime, timedelta
 import os
 
 # ========== 配置参数 ==========
-CSV_HISTORY = "data/rsi-history.csv"        # 历史记录文件
-CSV_ALERTS = "rsi-alerts.csv"               # TradingView 导入用的当前异常列表
-TIMEFRAME = "15m"                           # K线周期
-RSI_PERIOD = 14                             # RSI 周期
-OVERBOUGHT = 70                             # 超买阈值
-OVERSOLD = 30                               # 超卖阈值
-DAYS_TO_KEEP = 7                            # 数据保留天数
+CSV_HISTORY = "data/rsi-history.csv"
+CSV_OVERBOUGHT = "rsi-overbought.csv"   # ✅ 新增：超买列表
+CSV_OVERSOLD = "rsi-oversold.csv"       # ✅ 新增：超卖列表
+TIMEFRAME = "15m"
+RSI_PERIOD = 14
+OVERBOUGHT = 70
+OVERSOLD = 30
+DAYS_TO_KEEP = 7
 
-# 确保 data 目录存在
 os.makedirs("data", exist_ok=True)
 
 def get_usdt_futures():
-    """
-    获取所有 Binance USDT 永续合约交易对
-    返回: ['BTCUSDT', 'ETHUSDT', ...]
-    """
     url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
     try:
         response = requests.get(url, timeout=10).json()
         symbols = [
             sym["symbol"] for sym in response["symbols"]
-            if sym["symbol"].endswith("USDT") 
-            and sym["status"] == "TRADING"
+            if sym["symbol"].endswith("USDT") and sym["status"] == "TRADING"
         ]
         return sorted(symbols)
     except Exception as e:
@@ -41,50 +35,29 @@ def get_usdt_futures():
         return []
 
 def get_klines(symbol, interval=TIMEFRAME, limit=50):
-    """
-    获取指定交易对的K线数据
-    返回: 收盘价列表 [close1, close2, ...]
-    """
     url = "https://fapi.binance.com/fapi/v1/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
         response = requests.get(url, params=params, timeout=10).json()
-        return [float(k[4]) for k in response]  # 只取收盘价
+        return [float(k[4]) for k in response]
     except:
         return []
 
 def load_history():
-    """
-    加载历史记录
-    """
     if not os.path.exists(CSV_HISTORY):
-        print("🆕 创建新历史记录文件")
         return pd.DataFrame(columns=["Symbol", "RSI", "Signal", "Timestamp"])
-    
     try:
         df = pd.read_csv(CSV_HISTORY)
         if "Timestamp" in df.columns:
             df["Timestamp"] = pd.to_datetime(df["Timestamp"])
-        print(f"📁 已加载 {len(df)} 条历史记录")
         return df
-    except Exception as e:
-        print(f"⚠️  读取历史记录失败: {e}")
+    except:
         return pd.DataFrame(columns=["Symbol", "RSI", "Signal", "Timestamp"])
 
 def save_history(df):
-    """
-    保存历史记录
-    """
-    try:
-        df.to_csv(CSV_HISTORY, index=False)
-        print(f"💾 历史记录已保存: {len(df)} 条")
-    except Exception as e:
-        print(f"❌ 保存失败: {e}")
+    df.to_csv(CSV_HISTORY, index=False)
 
 def filter_last_n_days(df, days=DAYS_TO_KEEP):
-    """
-    只保留最近 N 天的数据
-    """
     if df.empty:
         return df
     cutoff = datetime.now() - timedelta(days=days)
@@ -93,32 +66,26 @@ def filter_last_n_days(df, days=DAYS_TO_KEEP):
 def main():
     print("🔍 开始扫描 Binance USDT 合约 RSI...")
 
-    # 1. 加载历史记录
     history_df = load_history()
-
-    # 2. 获取所有交易对
     symbols = get_usdt_futures()
     if not symbols:
-        print("❌ 未获取到任何交易对，退出")
+        print("❌ 未获取到任何交易对")
         return
+
     print(f"📊 共 {len(symbols)} 个交易对")
 
-    # 3. 当前时间（带时区）
     now = pd.Timestamp.now(tz='Asia/Shanghai')
     new_records = []
 
-    # 4. 遍历每个交易对
     for symbol in symbols:
         try:
             closes = get_klines(symbol, TIMEFRAME, 50)
             if len(closes) < RSI_PERIOD:
                 continue
 
-            # 计算 RSI
             rsi_values = RSI(np.array(closes), timeperiod=RSI_PERIOD)
             current_rsi = rsi_values[-1]
 
-            # 判断是否异常
             if current_rsi > OVERBOUGHT or current_rsi < OVERSOLD:
                 signal = "超买" if current_rsi > OVERBOUGHT else "超卖"
                 new_records.append({
@@ -127,47 +94,43 @@ def main():
                     "Signal": signal,
                     "Timestamp": now.strftime("%Y-%m-%d %H:%M")
                 })
-
         except Exception as e:
-            # 防止一个交易对出错影响整体
             continue
 
     print(f"✅ 扫描完成，发现 {len(new_records)} 个异常信号")
 
-    # 5. 更新历史记录
+    # 更新历史记录
     if new_records:
         new_df = pd.DataFrame(new_records)
         updated_history = pd.concat([history_df, new_df], ignore_index=True)
-        print(f"🔄 合并后总记录数: {len(updated_history)}")
     else:
         updated_history = history_df.copy()
 
-    # 6. 去重：每个 Symbol 保留最新一条
+    # 去重 + 保留最新
     if not updated_history.empty:
         updated_history = updated_history.sort_values("Timestamp", ascending=False)
         updated_history = updated_history.drop_duplicates(subset=["Symbol"], keep="first")
 
-    # 7. 只保留最近7天
+    # 只保留最近7天
     updated_history = filter_last_n_days(updated_history)
-
-    # 8. 保存历史记录
     save_history(updated_history)
 
-    # 9. 生成当前警报列表（TradingView 导入用）
-    alerts_df = updated_history[
-        (updated_history["RSI"] > OVERBOUGHT) | 
-        (updated_history["RSI"] < OVERSOLD)
-    ].sort_values("Signal", ascending=False)
+    # ✅ 生成两个独立列表
+    overbought_list = updated_history[updated_history["RSI"] > OVERBOUGHT][["Symbol"]]
+    oversold_list = updated_history[updated_history["RSI"] < OVERSOLD][["Symbol"]]
 
-    # 只导出 Symbol 列，TradingView List 只需要交易对
-    alerts_df[["Symbol"]].to_csv(CSV_ALERTS, index=False)
-    print(f"📤 已生成 TradingView 导入文件: {len(alerts_df)} 个标的")
-    print(f"🌐 文件路径: {CSV_ALERTS}")
+    # 保存为两个 CSV 文件
+    overbought_list.to_csv(CSV_OVERBOUGHT, index=False)
+    oversold_list.to_csv(CSV_OVERSOLD, index=False)
 
-    # 10. 显示最近5条
-    if not alerts_df.empty:
-        print("\n📈 最近异常信号:")
-        print(alerts_df.head().to_string(index=False))
+    print(f"📤 超买列表已生成: {len(overbought_list)} 个标的 → {CSV_OVERBOUGHT}")
+    print(f"📤 超卖列表已生成: {len(oversold_list)} 个标的 → {CSV_OVERSOLD}")
+
+    # 显示示例
+    if not overbought_list.empty:
+        print("\n📈 超买示例:", overbought_list.head()["Symbol"].tolist())
+    if not oversold_list.empty:
+        print("📉 超卖示例:", oversold_list.head()["Symbol"].tolist())
 
 if __name__ == "__main__":
     main()
